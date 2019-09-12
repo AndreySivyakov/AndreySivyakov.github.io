@@ -1,0 +1,136 @@
+---
+title: "Moneyball"
+author: "Andrey Sivyakov"
+date: "January 1, 2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+The movie "Moneyball", starring Brad Pitt and Jonah Hill and released in 2011, was my inspiration for this project. The movie shows how the Oakland Athletics baseball team and its general manager Billy Beane used analytical, evidence-based approach to assembling a competitive baseball team, despite Oakland's disadvantaged revenue situation. 
+
+Rigorous statistical analysis had demonstrated that on-base percentage and slugging percentage are reliable indicators of offensive success, and the A's became convinced that these qualities were cheaper to obtain on the open market than more historically valued qualities such as speed and contact. These observations often flew in the face of conventional baseball wisdom and the beliefs of many baseball scouts and executives.
+
+By re-evaluating the strategies that produce wins on the field, the 2002 Athletics, with approximately US$44 million in salary, were competitive with larger market teams such as the New York Yankees, who spent over US$125 million in payroll that same season. Because of the team's smaller revenues, Oakland is forced to find players undervalued by the market, and their system for finding value in undervalued players has proven itself thus far. This approach brought the A's to the playoffs in 2002 and 2003. (Source: Wikipedia)
+
+I'll work with data available on http://www.seanlahman.com/baseball-archive/statistics/ to find replacement players for the ones lost at the start of the off-season - during the 2001-02 offseason, when the team lost three key free agents. Two of them were lost to larger market teams: first baseman 2000 AL MVP Jason Giambi (giambja01) to the New York Yankees and outfielder Johnny Damon (damonjo01) to the Boston Red Sox. Besides, the A's designated hitter Olmedo Sáenz ('saenzol01') suffered a ruptured right Achilles tendon while running out a grounder in the 2002 American League Division Series against Minnesota and was sidelined for the remainder of the post season and most of 2003. Using batting statistics and players' salary data I created an algorithm that allows to choose three most undervalued players in MLB during the off-season assuming that all players are free agents and can be drafted. 
+
+Let's get started and download the data!
+
+```{r message=FALSE}
+library(dplyr)
+library(data.table)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+temp <- tempfile ()
+download.file ("http://seanlahman.com/files/database/lahman-csv_2014-02-14.zip",temp)
+batting <- read.csv (unz (temp, "Batting.csv"))
+salary <- read.csv (unz (temp, "Salaries.csv"))
+unlink (temp)
+```
+```{r echo=FALSE}
+kable(batting[1:3, ], caption = "Batting Data", "html") %>%
+  kable_styling(bootstrap_options = c("condensed", "responsive"), font_size = 10)
+kable(salary[1:3, ], caption = "Players' Salaries", "html") %>%
+  kable_styling(bootstrap_options = "condensed", full_width = F, position = "left", font_size = 10)
+```
+
+
+I'll calculate on-base percentage (OBP) and slugging percentage (SLG) for players in the database to evaluate players' offensive capabilities. I'll also calculate players' plate appearance (PA) to see how many times each player completed a turn batting. 
+
+```{r results='hide'}
+batting <- batting %>% 
+  mutate(OBP = round((H + BB + HBP)/(AB + BB + HBP + SF), digits = 4)) %>% 
+  mutate(SLG = ((H - X2B - X3B - HR) + 2*X2B + 3*X3B + 4*HR) / AB) %>%
+  mutate(PA = AB + BB + HBP + SH + SF)
+```
+```{r echo=FALSE}
+batting$SLG <- round(batting$SLG, 3)
+batting.temp <- batting %>% filter(PA > 500)
+kable(batting.temp[1:3, c('playerID', 'yearID', 'OBP', 'SLG', 'PA')], caption = "Batting data - New columns(OBP, SLG and PA)", "html") %>%
+  kable_styling(bootstrap_options = "condensed", full_width = F, position = "left", font_size = 10)
+```
+Remove batting data before 1985 since the table with salaries only include 1985 - 2013 years; merge batting data with players' salaries.
+```{r results='hide'}
+batting <- batting %>% filter(yearID >= 1985)
+combo <- merge(batting, salary, by = c('playerID','yearID'))
+```
+```{r echo=FALSE}
+kable(combo[1:3, ], caption = "Combo(Batting Data + Salaries)", "html") %>%
+  kable_styling(bootstrap_options = c("condensed", "responsive"), font_size = 10)
+```
+Select data for 2001, remove records with missing salary, SLG, and OBP. Extract columns of interest.
+```{r results='hide'}
+data.2001 <- combo %>% filter(yearID == 2001) %>% drop_na(salary, SLG, OBP)
+data.2001$playerID <- as.character(data.2001$playerID)
+stats.2001 <- data.2001[, c('playerID','SLG','OBP','salary', 'PA')]
+```
+```{r echo=FALSE}
+kable(stats.2001[1:3, ], caption = "Stats 2001", "html") %>%
+  kable_styling(bootstrap_options = c("condensed", "responsive"), full_width = F, position = "left", font_size = 10)
+```
+Extract data for 3 players to replace
+```{r results='hide'}
+players.to.replace.names <- c('giambja01', 'damonjo01', 'saenzol01')
+players.to.replace.stats <- subset(stats.2001, playerID %in% players.to.replace.names)
+```
+Pool of players to choose from
+```{r results='hide'}
+pool.2001 <- subset(stats.2001, !(playerID %in% players.to.replace.names))
+```
+Exclude players from the pool with plate appearances fewer than that of a lost player with minimum plate appearance
+```{r results='hide'}
+pool.2001.sorted <- pool.2001 %>% filter(PA >= min(players.to.replace.stats$PA))
+```
+Now, when we have tidy data, let's find capable offensive players undervalued by the league in 2001. The goal is not only to find replacement players that will have, as a group, higher mean OBP, mean SLG, and lower salary than Jason Giambi, Johnny Damon, and Olmedo Sáenz, the key free agents lost by Oakland Athletics in 2001, but to find a combination of players from the pool that will have the highest mean OBP and mean SLG and their total salary would be less than that of the three lost players. In other words, I will try to answer a question if the Oakland Athletics can find three new players with offensive characteristics better than those of the lost players, but pay them not more than the three lost players were paid in 2001.
+```{r results='hide'}
+a <- 1
+output.data <- players.to.replace.stats
+while (a <= nrow(pool.2001.sorted)) {
+  b = a + 1 
+  while (b <= nrow(pool.2001.sorted)){
+    c = b + 1
+    while (c <= nrow(pool.2001.sorted)){
+      if ((pool.2001.sorted[a, 'OBP'] + pool.2001.sorted[b, 'OBP'] + pool.2001.sorted[c, 'OBP'])/3 >= mean(output.data$OBP) &
+          (pool.2001.sorted[a, 'SLG'] + pool.2001.sorted[b, 'SLG'] + pool.2001.sorted[c, 'SLG'])/3 >= mean(output.data$SLG) &
+          pool.2001.sorted[a, 'salary'] + pool.2001.sorted[b, 'salary'] + pool.2001.sorted[c, 'salary'] <= sum(players.to.replace.stats$salary)){
+        output.data <- pool.2001.sorted[c(a,b,c), ]
+      }
+      c = c + 1
+    }
+    b = b + 1
+  }
+  a = a + 1
+}
+```
+As it turns out, the following three players were undervalued by the market in 2001 and represented Oakland Athletics' best choice. The bar graph below illustrates how their offensive capabilities and total salary compare to the offensive capabilities and total salary of the lost players.
+```{r echo=FALSE}
+kable(players.to.replace.stats, caption = "Lost players","html") %>%
+  kable_styling(bootstrap_options = "condensed", full_width = F, position = "left", font_size = 10)
+kable(output.data, caption = "Selected players","html") %>%
+  kable_styling(bootstrap_options = "condensed", full_width = F, position = "left", font_size = 10)
+```
+```{r echo=FALSE}
+options(scipen = 10)
+players <- rep(c('lost', 'new'), 3)
+mean_SLG <- c(mean(players.to.replace.stats$SLG), mean(output.data$SLG))
+mean_OBP <- c(mean(players.to.replace.stats$OBP), mean(output.data$OBP))
+sum_salary <- c(sum(players.to.replace.stats$salary), sum(output.data$salary))
+values <- c(mean_SLG, mean_OBP, sum_salary)
+stats <- c('mean_SLG', 'mean_SLG', 'mean_OBP', 'mean_OBP', 'sum_salary', 'sum_salary')
+df <- data.frame(players, values, stats)
+p <- ggplot(df, aes(players, values)) +
+  geom_bar(stat = 'identity', aes(fill = players)) + 
+  facet_wrap(~stats, nrow =1, scales = "free") + 
+  theme_bw()+
+  ggtitle('Differences in average On-Base Percentages, average Slugging Percentages 
+          and total Salaries between three lost players and newly selected players') +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+p
+```
